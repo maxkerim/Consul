@@ -1,7 +1,7 @@
-# Пошаговый гайд: Service Discovery с Consul с нуля
+# Пошаговый гайд: Service Discovery с Consul на Python
 
 Этот гайд показывает, как собрать проект самому, шаг за шагом, и объясняет, зачем нужен каждый шаг.
-Готовый результат уже лежит в репозитории, так что можно сверяться с ним.
+Готовый результат лежит в репозитории, можно сверяться с ним.
 
 ## Что мы строим
 
@@ -20,7 +20,7 @@
 
 ## Шаг 0. Подготовка
 
-Нужны Docker и Docker Compose. Node.js на машине нужен только для локальной проверки кода.
+Нужны Docker и Docker Compose. Python на машине нужен только для запуска без Docker.
 
 ```bash
 mkdir service-discovery && cd service-discovery
@@ -33,8 +33,8 @@ git init
 ```
 service-discovery/
 ├── docker-compose.yml
-├── services/   (server.js, package.json, Dockerfile)
-└── gateway/    (server.js, package.json, Dockerfile)
+├── services/   (app.py, requirements.txt, Dockerfile)
+└── gateway/    (app.py, requirements.txt, Dockerfile)
 ```
 
 ## Шаг 1. Consul
@@ -57,46 +57,50 @@ services:
 - `-ui` - включает веб-интерфейс на http://localhost:8500.
 - Порт 8500 - HTTP API, через него сервисы регистрируются, а gateway ищет их. Порт 8600 - DNS: `service-a.service.consul` резолвится в адрес сервиса.
 
-Проверка: `docker compose up consul`, затем откройте http://localhost:8500. Список сервисов пока пустой (там только сам consul).
+Проверка: `docker compose up consul`, затем откройте http://localhost:8500. Пока там только сам consul.
 
-## Шаг 2. Dummy-сервис
+## Шаг 2. Dummy-сервис (`services/app.py`)
 
-Файл `services/server.js` (полный код с комментариями лежит в репозитории). Что в нём и зачем:
+Используем Flask для HTTP-сервера и requests для обращений к Consul. Файл `services/requirements.txt`:
 
-1. **HTTP-сервер** с `/info` (имя и время, по заданию) и `/health`. Эндпоинт `/health` нужен, чтобы Consul мог проверять, жив ли сервис.
-2. **Конфигурация через переменные окружения** (`SERVICE_NAME`, `PORT`, `CONSUL_HTTP_ADDR`). Благодаря этому один код запускается как Service A, B и C.
-3. **Регистрация при старте**: запрос `PUT /v1/agent/service/register` с именем, адресом, портом и health check. Это ключевая часть задания - сервис сам себя добавляет в реестр.
-4. **Retry при регистрации**: Consul может подняться позже сервиса, поэтому пробуем снова каждые 2 секунды.
-5. **Удаление при остановке** (`SIGTERM`/`SIGINT`): сервис сообщает Consul, что уходит, чтобы gateway не слал ему запросы. Если контейнер убили жёстко, сработает `DeregisterCriticalServiceAfter: 30s`.
-
-Почему уникальный `ID`: имя `service-a` может принадлежать нескольким экземплярам, а `ID` у каждого свой. Иначе при масштабировании регистрации перезаписывали бы друг друга.
-
-`services/package.json` - минимальный, без зависимостей:
-
-```json
-{ "name": "dummy-service", "version": "1.0.0", "private": true, "main": "server.js" }
 ```
+flask==3.0.3
+requests==2.32.3
+```
+
+Что в `app.py` и зачем:
+
+1. **Конфигурация через переменные окружения** (`SERVICE_NAME`, `PORT`, `CONSUL_HTTP_ADDR`). Благодаря этому один код запускается как Service A, B и C.
+2. **Эндпоинты** `/info` (имя и время, по заданию) и `/health`. Эндпоинт `/health` нужен, чтобы Consul мог проверять, жив ли сервис.
+3. **Регистрация при старте** (`register()`): запрос `PUT /v1/agent/service/register` с именем, адресом, портом и health check. Это ключевая часть задания: сервис сам себя добавляет в реестр.
+4. **Retry при регистрации**: Consul может подняться позже сервиса, поэтому пробуем снова каждые 2 секунды.
+5. **Фоновый поток**: `app.run()` блокирует главный поток, поэтому регистрация идёт в отдельном потоке (`threading.Thread`).
+6. **Удаление при остановке** (`SIGTERM`/`SIGINT`): сервис сообщает Consul, что уходит, чтобы gateway не слал ему запросы. Если контейнер убили жёстко, сработает `DeregisterCriticalServiceAfter: 30s`.
+
+Почему уникальный `SERVICE_ID`: имя `service-a` может принадлежать нескольким экземплярам, а ID у каждого свой. Иначе при масштабировании регистрации перезаписывали бы друг друга.
 
 `services/Dockerfile`:
 
 ```dockerfile
-FROM node:20-alpine
+FROM python:3.12-slim
 WORKDIR /app
-COPY package.json server.js ./
-CMD ["node", "server.js"]
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app.py .
+CMD ["python", "app.py"]
 ```
 
-Node 20 выбран потому, что в нём есть встроенный `fetch`, и сторонние библиотеки не нужны.
+Зависимости копируются и ставятся отдельным слоем до копирования кода: пока `requirements.txt` не менялся, Docker берёт этот слой из кэша, и пересборка идёт быстро.
 
-## Шаг 3. API Gateway
+## Шаг 3. API Gateway (`gateway/app.py`)
 
-Файл `gateway/server.js`. Логика:
+Логика:
 
-1. Берём из URL имя сервиса: `/service-a/info` -> имя `service-a`, путь `/info`.
-2. **Discovery**: `GET /v1/health/service/service-a?passing=true`. Параметр `passing=true` - главная деталь: Consul вернёт только экземпляры с пройденным health check. Упавшие сервисы исчезают из выдачи сами.
-3. Выбираем экземпляр (round-robin, если их несколько).
+1. Берём из URL имя сервиса: `/service-a/info` -> имя `service-a`, путь `info`.
+2. **Discovery** (`discover()`): `GET /v1/health/service/service-a?passing=true`. Параметр `passing=true` - главная деталь: Consul вернёт только экземпляры с пройденным health check. Упавшие сервисы исчезают из выдачи сами.
+3. Выбираем экземпляр (`pick()`, round-robin, если их несколько).
 4. Проксируем запрос на `http://<address>:<port>/info` и возвращаем ответ клиенту. В заголовке `X-Routed-To` видно, куда ушёл запрос.
-5. Если здоровых экземпляров нет - `503`. Если недоступен сам Consul - `502`.
+5. Если здоровых экземпляров нет - `503`. Если недоступен сам Consul или сервис - `502`.
 
 Дополнительно `/services` показывает, что gateway видит в Consul. Это удобно для отладки.
 
@@ -106,7 +110,7 @@ Node 20 выбран потому, что в нём есть встроенны�
 dig @127.0.0.1 -p 8600 service-a.service.consul SRV
 ```
 
-`package.json` и `Dockerfile` для gateway аналогичны сервисным, плюс `EXPOSE 8080`.
+`requirements.txt` и `Dockerfile` для gateway такие же, как у сервисов, плюс `EXPOSE 8080`.
 
 ## Шаг 4. docker-compose.yml
 
@@ -124,7 +128,7 @@ dig @127.0.0.1 -p 8600 service-a.service.consul SRV
     networks: [mesh]
 ```
 
-Ещё два сервиса (`service-b`, `service-c`) отличаются только именами. Остальное:
+`service-b` и `service-c` отличаются только именами. Остальное:
 - `build: ./services` - все три собираются из одного кода.
 - `CONSUL_HTTP_ADDR: http://consul:8500` - Docker-сеть сама резолвит имя `consul` в адрес контейнера.
 - `networks: mesh` - общая сеть, в которой контейнеры видят друг друга по hostname. Именно по этому hostname сервисы регистрируются в Consul.
@@ -163,18 +167,27 @@ curl http://localhost:8080/service-b/info   # снова работает, бе�
 
 # 3. Масштабирование: несколько экземпляров одного сервиса
 docker compose up -d --scale service-a=3
-# Для этого у service-a в compose нужно убрать container_name (у нас его и нет).
 for i in 1 2 3 4 5 6; do curl -si http://localhost:8080/service-a/info | grep X-Routed-To; done
 ```
 
 В третьем эксперименте заголовок `X-Routed-To` покажет разные адреса: gateway сам нашёл новые экземпляры и распределяет между ними нагрузку, хотя мы ничего в нём не меняли.
 
-## Шаг 7. Отправка на GitHub
+## Шаг 7. Запуск без Docker (по желанию)
+
+Если у вас есть Consul локально (`consul agent -dev`), можно запустить всё напрямую:
+
+```bash
+pip install -r services/requirements.txt
+SERVICE_NAME=service-a SERVICE_DISPLAY_NAME="Service A" PORT=3001 SERVICE_ADDRESS=127.0.0.1 python services/app.py
+PORT=8080 python gateway/app.py
+```
+
+## Шаг 8. Отправка на GitHub
 
 ```bash
 git add -A
 git commit -m "Service discovery with Consul"
-git remote add origin https://github.com/<логин>/service-discovery.git
+git remote add origin https://github.com/<логин>/<репозиторий>.git
 git branch -M main
 git push -u origin main
 ```
@@ -183,7 +196,7 @@ git push -u origin main
 
 | Цель | Где в проекте |
 |------|---------------|
-| Как сервисы регистрируются в Consul | `register()` в `services/server.js` |
-| Как запрашивать информацию у Consul | `discover()` в `gateway/server.js`, `/v1/health/service/...` |
+| Как сервисы регистрируются в Consul | `register()` в `services/app.py` |
+| Как запрашивать информацию у Consul | `discover()` в `gateway/app.py`, `/v1/health/service/...` |
 | Базовый механизм service discovery | gateway ищет адреса по имени, а не из конфига |
 | Связь сервис-сервис в микросервисах | gateway находит и проксирует запросы к сервисам |

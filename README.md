@@ -1,6 +1,6 @@
 # Service Discovery with Consul
 
-Learning project: three dummy services register themselves in **Consul**, and an **API Gateway** discovers them through Consul's HTTP API and routes requests to them.
+Learning project (Python, Flask): three dummy services register themselves in **Consul**, and an **API Gateway** discovers them through Consul's HTTP API and routes requests to them.
 
 ```
 client ──► gateway :8080 ──(query Consul)──► consul :8500

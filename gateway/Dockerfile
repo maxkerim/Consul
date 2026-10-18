@@ -1,6 +1,7 @@
-FROM node:20-alpine
+FROM python:3.12-slim
 WORKDIR /app
-COPY package.json ./
-COPY server.js ./
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app.py .
 EXPOSE 8080
-CMD ["node", "server.js"]
+CMD ["python", "app.py"]
