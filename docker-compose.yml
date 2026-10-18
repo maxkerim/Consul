@@ -1,0 +1,61 @@
+services:
+  consul:
+    image: hashicorp/consul:1.19
+    container_name: consul
+    command: agent -dev -client=0.0.0.0 -ui
+    ports:
+      - "8500:8500"       # HTTP API + UI
+      - "8600:8600/udp"   # DNS interface
+    networks:
+      - mesh
+
+  service-a:
+    build: ./services
+    environment:
+      SERVICE_NAME: service-a
+      SERVICE_DISPLAY_NAME: "Service A"
+      PORT: 3000
+      CONSUL_HTTP_ADDR: http://consul:8500
+    depends_on:
+      - consul
+    networks:
+      - mesh
+
+  service-b:
+    build: ./services
+    environment:
+      SERVICE_NAME: service-b
+      SERVICE_DISPLAY_NAME: "Service B"
+      PORT: 3000
+      CONSUL_HTTP_ADDR: http://consul:8500
+    depends_on:
+      - consul
+    networks:
+      - mesh
+
+  service-c:
+    build: ./services
+    environment:
+      SERVICE_NAME: service-c
+      SERVICE_DISPLAY_NAME: "Service C"
+      PORT: 3000
+      CONSUL_HTTP_ADDR: http://consul:8500
+    depends_on:
+      - consul
+    networks:
+      - mesh
+
+  gateway:
+    build: ./gateway
+    environment:
+      PORT: 8080
+      CONSUL_HTTP_ADDR: http://consul:8500
+    ports:
+      - "8080:8080"
+    depends_on:
+      - consul
+    networks:
+      - mesh
+
+networks:
+  mesh:
