@@ -8,6 +8,8 @@ client ──► gateway :8080 ──(query Consul)──► consul :8500
                 └──► service-a / service-b / service-c :3000
 ```
 
+> Пошаговое объяснение, как собрать проект с нуля и зачем нужен каждый шаг: [GUIDE.md](GUIDE.md)
+
 ## Components
 
 | Part | Description |
